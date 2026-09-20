@@ -7,8 +7,10 @@ from supabase import create_client, Client
 # Initialize Supabase from Streamlit Secrets
 @st.cache_resource
 def init_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    url = st.secrets["SUPABASE_URL"].strip().rstrip("/")
+    if url.endswith("/rest/v1"):
+        url = url[:-8]
+    key = st.secrets["SUPABASE_KEY"].strip()
     return create_client(url, key)
 
 supabase = init_supabase()
