@@ -146,20 +146,21 @@ def get_messages(user1, user2):
 def send_message_callback():
     msg = st.session_state.get("message_input", "").strip()
     if msg != "":
-        current_user = st.session_state.username
-        recipient = st.session_state.selected_user
+        current_user = st.session_state.get("username", "Anonymous")
+        recipient = st.session_state.get("selected_user", "")
         current_time = datetime.now().strftime("%I:%M %p")
         
-        # Save directly to Supabase Cloud Database!
-        supabase.table("messages").insert({
-            "sender": current_user,
-            "recipient": recipient,
-            "type": "text",
-            "content": msg,
-            "time": current_time
-        }).execute()
-        
-        st.session_state.message_input = ""
+        try:
+            supabase.table("messages").insert({
+                "sender": current_user,
+                "recipient": recipient,
+                "type": "text",
+                "content": msg,
+                "time": current_time
+            }).execute()
+            st.session_state.message_input = ""
+        except Exception as e:
+            st.error(f"Database Error Details: {e}")
 
 def chat_window():
     user = st.session_state.selected_user
