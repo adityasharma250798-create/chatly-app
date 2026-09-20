@@ -2,6 +2,16 @@ import streamlit as st
 from html import escape
 from datetime import datetime
 import base64
+from supabase import create_client, Client
+
+# Initialize Supabase from Streamlit Secrets
+@st.cache_resource
+def init_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase = init_supabase()
 st.set_page_config(page_title="Login",layout="centered")
 #-load css-
 def load_css():
@@ -112,16 +122,116 @@ def chat_list():
             if st.button("open", key=f"open_{name}", use_container_width=True):
                 st.session_state.selected_user = name
                 st.rerun()
-#chat window
+# ------------------ SUPABASE MESSAGE FUNCTIONS -------------------
+
+def get_messages(user1, user2):
+    """Fetch messages between two users from Supabase"""
+    try:
+        response = supabase.table("messages").select("*").execute()
+        all_msgs = response.data
+        
+        # Filter messages where (sender=user1 AND recipient=user2) OR (sender=user2 AND recipient=user1)
+        conversation = [
+            m for m in all_msgs 
+            if (m["sender"] == user1 and m["recipient"] == user2) or 
+               (m["sender"] == user2 and m["recipient"] == user1)
+        ]
+        # Sort chronologically
+        conversation.sort(key=lambda x: x["id"])
+        return conversation
+    except Exception as e:
+        st.error(f"Error fetching messages: {e}")
+        return []
+
 def send_message_callback():
-    msg=st.session_state.get("message_input","").strip()
-    if msg!="":
-        user=st.session_state.selected_user
-        current_time=datetime.now().strftime("%I:%M %p")
-        if user not in st.session_state.messages:
-            st.session_state.messages[user]=[]
-        st.session_state.messages[user].append({"sender":"Me","message":msg,"time":current_time})
-        st.session_state.message_input=""
+    msg = st.session_state.get("message_input", "").strip()
+    if msg != "":
+        current_user = st.session_state.username
+        recipient = st.session_state.selected_user
+        current_time = datetime.now().strftime("%I:%M %p")
+        
+        # Save directly to Supabase Cloud Database!
+        supabase.table("messages").insert({
+            "sender": current_user,
+            "recipient": recipient,
+            "type": "text",
+            "content": msg,
+            "time": current_time
+        }).execute()
+        
+        st.session_state.message_input = ""
+
+def chat_window():
+    user = st.session_state.selected_user
+    current_user = st.session_state.username
+    
+    # Header
+    st.markdown(
+        f'<div class="chat-header"><div class="chat-header-content"><div class="avatar">👤</div><div>'
+        f'<div class="chat-username" style="color: white; font-weight: bold;">{escape(user)}</div>'
+        f'<div class="online-status" style="color:#00a884;">● Online</div>'
+        f'</div></div></div>', unsafe_allow_html=True
+    )
+    
+    # Fetch real-time conversation from Supabase
+    messages = get_messages(current_user, user)
+    
+    chat_html = '<div class="chat-area">'
+    for msg in messages:
+        sender = msg["sender"]
+        time = escape(str(msg["time"]))
+        msg_type = msg.get("type", "text")
+        
+        if msg_type == "text":
+            message = escape(str(msg.get("content", "")))
+            content_html = f'<div class="message-text">{message}</div>'
+        elif msg_type == "image":
+            content_html = f'<img src="data:image/png;base64,{msg["content"]}" style="max-width: 250px; border-radius: 8px; margin-bottom: 5px;">'
+        elif msg_type == "video":
+            content_html = f'<video width="250" controls style="border-radius: 8px; margin-bottom: 5px;"><source src="data:video/mp4;base64,{msg["content"]}" type="video/mp4"></video>'
+            
+        # If logged-in user sent it -> Right side, else -> Left side
+        if sender == current_user:
+            chat_html += f'<div class="message-wrapper right"><div class="message message-right">{content_html}<div class="message-time">{time} ✓✓</div></div></div>'
+        else:
+            chat_html += f'<div class="message-wrapper left"><div class="message message-left">{content_html}<div class="message-time">{time}</div></div></div>'
+            
+    chat_html += "</div>"
+    st.markdown(chat_html, unsafe_allow_html=True)
+    st.write("")
+    
+    # Input Bar
+    col1, col2, col3, col4 = st.columns([1, 1, 7, 1])
+    
+    with col1:
+        with st.popover("📎", use_container_width=True):
+            st.markdown("**Attach Media**")
+            upload_media = st.file_uploader("Upload Image or Video", type=["jpg", "jpeg", "png", "mp4"], label_visibility="collapsed")
+            if upload_media:
+                if st.button("📤 Send", type="primary", use_container_width=True):
+                    current_time = datetime.now().strftime("%I:%M %p")
+                    file_bytes = upload_media.getvalue()
+                    b64_file = base64.b64encode(file_bytes).decode()
+                    media_type = "video" if upload_media.name.endswith(".mp4") else "image"
+                    
+                    supabase.table("messages").insert({
+                        "sender": current_user,
+                        "recipient": recipient,
+                        "type": media_type,
+                        "content": b64_file,
+                        "time": current_time
+                    }).execute()
+                    st.rerun()
+
+    with col2:
+        if st.button("😎", key="emoji_button", use_container_width=True):
+            st.info("Emoji sent")
+
+    with col3:
+        st.text_input("Message", placeholder=f"Type a message to {user}...", label_visibility="collapsed", key="message_input", on_change=send_message_callback)
+
+    with col4:
+        st.button("➤", key="send_button", use_container_width=True, type="primary", on_click=send_message_callback)
 def stories():
     st.header("📸 Stories")
     st.caption("Share what is happening around you")
@@ -152,84 +262,7 @@ def stories():
             st.session_state.my_story = upload_file.getvalue()
             st.success("Story posted successfully!")
             st.rerun()
-def chat_window():
-    user = st.session_state.selected_user
-    
-    # Header
-    st.markdown(
-        f'<div class="chat-header"><div class="chat-header-content"><div class="avatar">👤</div><div>'
-        f'<div class="chat-username" style="color: white; font-weight: bold;">{escape(user)}</div>'
-        f'<div class="online-status" style="color:#00a884;">● Online</div>'
-        f'</div></div></div>', unsafe_allow_html=True
-    )
-    
-    # Messages display
-    chat_html = '<div class="chat-area">'
-    messages = st.session_state.messages.get(user, [])
-    
-    for msg in messages:
-        sender = msg["sender"]
-        time = escape(str(msg["time"]))
-        msg_type = msg.get("type", "text")
-        
-        if msg_type == "text":
-            message = escape(str(msg.get("message", "")))
-            content_html = f'<div class="message-text">{message}</div>'
-        elif msg_type == "image":
-            content_html = f'<img src="data:image/png;base64,{msg["content"]}" style="max-width: 250px; border-radius: 8px; margin-bottom: 5px;">'
-        elif msg_type == "video":
-            content_html = f'<video width="250" controls style="border-radius: 8px; margin-bottom: 5px;"><source src="data:video/mp4;base64,{msg["content"]}" type="video/mp4"></video>'
-            
-        if sender != "Me":
-            chat_html += f'<div class="message-wrapper left"><div class="message message-left">{content_html}<div class="message-time">{time}</div></div></div>'
-        else:
-            chat_html += f'<div class="message-wrapper right"><div class="message message-right">{content_html}<div class="message-time">{time} ✓✓</div></div></div>'
-            
-    chat_html += "</div>"
-    st.markdown(chat_html, unsafe_allow_html=True)
-    st.write("")
-    
-    # ----------------------------------------
-    # INPUT BAR WITH ATTACH (📎) BUTTON
-    # ----------------------------------------
-    col1, col2, col3, col4 = st.columns([1, 1, 7, 1])
-    
-    # Attachment Popover (📎)
-    with col1:
-        with st.popover("📎", use_container_width=True):
-            st.markdown("**Attach Media**")
-            upload_media = st.file_uploader("Upload Image or Video", type=["jpg", "jpeg", "png", "mp4"], label_visibility="collapsed")
-            if upload_media:
-                if st.button("📤 Send", type="primary", use_container_width=True):
-                    current_time = datetime.now().strftime("%I:%M %p")
-                    file_bytes = upload_media.getvalue()
-                    b64_file = base64.b64encode(file_bytes).decode()
-                    
-                    media_type = "video" if upload_media.name.endswith(".mp4") else "image"
-                    
-                    if user not in st.session_state.messages:
-                        st.session_state.messages[user] = []
-                        
-                    st.session_state.messages[user].append({
-                        "sender": "Me",
-                        "type": media_type,
-                        "content": b64_file,
-                        "time": current_time,
-                    })
-                    st.rerun()
 
-    # Emoji Button (😎)
-    with col2:
-        if st.button("😎", key="emoji_button", use_container_width=True):
-            st.info("Emoji sent")
-
-    # Text Input Box
-    with col3:
-        st.text_input("Message", placeholder=f"Type a message to {user}...", label_visibility="collapsed", key="message_input", on_change=send_message_callback)
-
-    # Send Button (➤)
-    with col4:
-        st.button("➤", key="send_button", use_container_width=True, type="primary", on_click=send_message_callback)
 #--------main code--------
 if st.session_state.logged_in==False:
     login_page()
